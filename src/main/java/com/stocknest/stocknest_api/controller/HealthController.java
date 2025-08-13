@@ -10,7 +10,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api")
 public class HealthController {
-    
+
     @GetMapping("/health")
     public Map<String, Object> health() {
         Map<String, Object> response = new HashMap<>();
@@ -19,7 +19,7 @@ public class HealthController {
         response.put("timestamp", System.currentTimeMillis());
         return response;
     }
-    
+
     @GetMapping("/")
     public Map<String, String> root() {
         Map<String, String> response = new HashMap<>();
