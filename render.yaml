@@ -11,3 +11,7 @@ services:
         generateValue: true
       - key: MONGODB_URI
         value: mongodb+srv://om95109313:vV8m2bapHJyhWq3u@cluster0.u98uhyb.mongodb.net/stocknest?retryWrites=true&w=majority&appName=Cluster0
+      - key: ANGELONE_API_KEY
+        value: AAAQ167570
+      - key: ANGELONE_API_SECRET
+        value: 01e94f0d-a641-4224-b57c-728f21c6c413
