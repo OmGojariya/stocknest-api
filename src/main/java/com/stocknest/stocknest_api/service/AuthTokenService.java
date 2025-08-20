@@ -9,9 +9,9 @@ import jakarta.servlet.http.HttpServletRequest;
 @Service
 @RequiredArgsConstructor
 public class AuthTokenService {
-    
+
     private final JwtUtil jwtUtil;
-    
+
     /**
      * Extract JWT token from request header
      */
@@ -22,7 +22,7 @@ public class AuthTokenService {
         }
         return null;
     }
-    
+
     /**
      * Validate token and get user ID
      */
@@ -30,7 +30,7 @@ public class AuthTokenService {
         if (token == null) {
             return null;
         }
-        
+
         try {
             String username = jwtUtil.extractUsername(token);
             if (jwtUtil.validateToken(token, username)) {
@@ -41,7 +41,7 @@ public class AuthTokenService {
             return null;
         }
     }
-    
+
     /**
      * Get authenticated user ID from request
      */

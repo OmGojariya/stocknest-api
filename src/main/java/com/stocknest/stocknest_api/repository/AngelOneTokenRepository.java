@@ -9,5 +9,6 @@ import java.util.Optional;
 @Repository
 public interface AngelOneTokenRepository extends MongoRepository<AngelOneToken, String> {
     Optional<AngelOneToken> findByUserId(String userId);
+
     void deleteByUserId(String userId);
 }

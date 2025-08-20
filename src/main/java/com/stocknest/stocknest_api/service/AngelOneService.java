@@ -1,78 +1,343 @@
 package com.stocknest.stocknest_api.service;
 
-import com.stocknest.stocknest_api.config.AngelOneConfig;
+import com.stocknest.stocknest_api.model.angelone.*;
 import com.stocknest.stocknest_api.model.AngelOneToken;
 import com.stocknest.stocknest_api.repository.AngelOneTokenRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.MediaType;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.BodyInserters;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
+import org.springframework.web.client.RestTemplate;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import java.time.LocalDateTime;
-import java.util.Map;
 import java.util.Optional;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AngelOneService {
 
-    private final WebClient angelOneWebClient;
-    private final AngelOneConfig angelOneConfig;
-    private final AngelOneTokenRepository tokenRepository;
+    @Autowired
+    private RestTemplate restTemplate;
+
+    @Autowired
+    private AngelOneTokenRepository tokenRepository;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Value("${angelone.api.key}")
+    private String apiKey;
+
+    @Value("${angelone.api.secret}")
+    private String apiSecret;
+
+    private static final String BASE_URL = "https://apiconnect.angelbroking.com";
 
     /**
-     * Generate OAuth authorization URL for AngelOne
+     * Login to AngelOne using credentials
      */
-    public String getAuthorizationUrl(String state) {
-        return angelOneConfig.getBaseUrl() + "/rest/auth/angelbroking/user/v1/loginUrl?" +
-                "api_key=" + angelOneConfig.getClientId() +
-                "&state=" + state;
+    public AngelOneResponse<LoginResponse> login(LoginRequest loginRequest) {
+        try {
+            String url = BASE_URL + "/rest/auth/angelbroking/user/v1/loginByPassword";
+
+            HttpHeaders headers = createHeaders();
+            headers.set("Content-Type", "application/json");
+
+            HttpEntity<LoginRequest> request = new HttpEntity<>(loginRequest, headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<LoginResponse> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus() && responseMap.get("data") != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) responseMap.get("data");
+                LoginResponse loginResponse = new LoginResponse();
+                loginResponse.setJwtToken((String) data.get("jwtToken"));
+                loginResponse.setRefreshToken((String) data.get("refreshToken"));
+                loginResponse.setFeedToken((String) data.get("feedToken"));
+                result.setData(loginResponse);
+
+                // Save tokens to database
+                saveTokens(data, loginRequest.getClientcode());
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error during login: ", e);
+            AngelOneResponse<LoginResponse> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Login failed: " + e.getMessage());
+            return errorResponse;
+        }
     }
 
     /**
-     * Exchange authorization code for access token
+     * Get user profile
      */
-    @SuppressWarnings("unchecked")
-    public Mono<Map<String, Object>> exchangeCodeForToken(String authCode, String userId) {
-        return angelOneWebClient.post()
-                .uri("/rest/auth/angelbroking/jwt/v1/generateTokens")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(BodyInserters.fromValue(Map.of(
-                        "api_key", angelOneConfig.getClientId(),
-                        "request_token", authCode,
-                        "checksum", generateChecksum(authCode)
-                )))
-                .retrieve()
-                .bodyToMono(Map.class)
-                .cast(Map.class)
-                .map(response -> (Map<String, Object>) response)
-                .doOnSuccess(response -> saveTokens(response, userId))
-                .doOnError(error -> log.error("Error exchanging code for token: ", error));
+    public AngelOneResponse<ProfileResponse> getProfile(String userId) {
+        try {
+            Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
+            if (tokenOpt.isEmpty()) {
+                AngelOneResponse<ProfileResponse> errorResponse = new AngelOneResponse<>();
+                errorResponse.setStatus(false);
+                errorResponse.setMessage("No token found for user");
+                return errorResponse;
+            }
+
+            String url = BASE_URL + "/rest/secure/angelbroking/user/v1/getProfile";
+            HttpHeaders headers = createAuthenticatedHeaders(tokenOpt.get().getJwtToken());
+
+            HttpEntity<Void> request = new HttpEntity<>(headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<ProfileResponse> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus() && responseMap.get("data") != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) responseMap.get("data");
+                ProfileResponse profileResponse = objectMapper.convertValue(data, ProfileResponse.class);
+                result.setData(profileResponse);
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error getting profile: ", e);
+            AngelOneResponse<ProfileResponse> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Get profile failed: " + e.getMessage());
+            return errorResponse;
+        }
+    }
+
+    /**
+     * Place order
+     */
+    public AngelOneResponse<OrderResponse> placeOrder(String userId, OrderRequest orderRequest) {
+        try {
+            Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
+            if (tokenOpt.isEmpty()) {
+                AngelOneResponse<OrderResponse> errorResponse = new AngelOneResponse<>();
+                errorResponse.setStatus(false);
+                errorResponse.setMessage("No token found for user");
+                return errorResponse;
+            }
+
+            String url = BASE_URL + "/rest/secure/angelbroking/order/v1/placeOrder";
+            HttpHeaders headers = createAuthenticatedHeaders(tokenOpt.get().getJwtToken());
+
+            HttpEntity<OrderRequest> request = new HttpEntity<>(orderRequest, headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<OrderResponse> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus() && responseMap.get("data") != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) responseMap.get("data");
+                OrderResponse orderResponse = objectMapper.convertValue(data, OrderResponse.class);
+                result.setData(orderResponse);
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error placing order: ", e);
+            AngelOneResponse<OrderResponse> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Place order failed: " + e.getMessage());
+            return errorResponse;
+        }
+    }
+
+    /**
+     * Get holdings
+     */
+    public AngelOneResponse<List<HoldingResponse>> getHoldings(String userId) {
+        try {
+            Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
+            if (tokenOpt.isEmpty()) {
+                AngelOneResponse<List<HoldingResponse>> errorResponse = new AngelOneResponse<>();
+                errorResponse.setStatus(false);
+                errorResponse.setMessage("No token found for user");
+                return errorResponse;
+            }
+
+            String url = BASE_URL + "/rest/secure/angelbroking/portfolio/v1/getHolding";
+            HttpHeaders headers = createAuthenticatedHeaders(tokenOpt.get().getJwtToken());
+
+            HttpEntity<Void> request = new HttpEntity<>(headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<List<HoldingResponse>> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus() && responseMap.get("data") != null) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> dataList = (List<Map<String, Object>>) responseMap.get("data");
+                List<HoldingResponse> holdings = dataList.stream()
+                        .map(data -> objectMapper.convertValue(data, HoldingResponse.class))
+                        .toList();
+                result.setData(holdings);
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error getting holdings: ", e);
+            AngelOneResponse<List<HoldingResponse>> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Get holdings failed: " + e.getMessage());
+            return errorResponse;
+        }
+    }
+
+    /**
+     * Get LTP (Last Traded Price)
+     */
+    public AngelOneResponse<LTPResponse> getLTP(String userId, LTPRequest ltpRequest) {
+        try {
+            Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
+            if (tokenOpt.isEmpty()) {
+                AngelOneResponse<LTPResponse> errorResponse = new AngelOneResponse<>();
+                errorResponse.setStatus(false);
+                errorResponse.setMessage("No token found for user");
+                return errorResponse;
+            }
+
+            String url = BASE_URL + "/rest/secure/angelbroking/order/v1/getLTP";
+            HttpHeaders headers = createAuthenticatedHeaders(tokenOpt.get().getJwtToken());
+
+            HttpEntity<LTPRequest> request = new HttpEntity<>(ltpRequest, headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<LTPResponse> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus() && responseMap.get("data") != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) responseMap.get("data");
+                LTPResponse ltpResponse = objectMapper.convertValue(data, LTPResponse.class);
+                result.setData(ltpResponse);
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error getting LTP: ", e);
+            AngelOneResponse<LTPResponse> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Get LTP failed: " + e.getMessage());
+            return errorResponse;
+        }
+    }
+
+    /**
+     * Logout user
+     */
+    public AngelOneResponse<String> logout(String userId) {
+        try {
+            Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
+            if (tokenOpt.isEmpty()) {
+                AngelOneResponse<String> errorResponse = new AngelOneResponse<>();
+                errorResponse.setStatus(false);
+                errorResponse.setMessage("No token found for user");
+                return errorResponse;
+            }
+
+            String url = BASE_URL + "/rest/secure/angelbroking/user/v1/logout";
+            HttpHeaders headers = createAuthenticatedHeaders(tokenOpt.get().getJwtToken());
+
+            Map<String, String> logoutRequest = new HashMap<>();
+            logoutRequest.put("clientcode", userId);
+
+            HttpEntity<Map<String, String>> request = new HttpEntity<>(logoutRequest, headers);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, request, String.class);
+
+            Map<String, Object> responseMap = objectMapper.readValue(response.getBody(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+
+            AngelOneResponse<String> result = new AngelOneResponse<>();
+            result.setStatus((Boolean) responseMap.get("status"));
+            result.setMessage((String) responseMap.get("message"));
+            result.setErrorcode((String) responseMap.get("errorcode"));
+
+            if (result.isStatus()) {
+                // Delete tokens from database
+                tokenRepository.deleteByUserId(userId);
+                result.setData("Logged out successfully");
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("Error during logout: ", e);
+            AngelOneResponse<String> errorResponse = new AngelOneResponse<>();
+            errorResponse.setStatus(false);
+            errorResponse.setMessage("Logout failed: " + e.getMessage());
+            return errorResponse;
+        }
+    }
+
+    /**
+     * Get stored token for user
+     */
+    private Optional<AngelOneToken> getTokenForUser(String userId) {
+        return tokenRepository.findByUserId(userId);
     }
 
     /**
      * Save tokens to database
      */
-    @SuppressWarnings("unchecked")
-    private void saveTokens(Map<String, Object> response, String userId) {
+    private void saveTokens(Map<String, Object> data, String userId) {
         try {
-            Map<String, Object> data = (Map<String, Object>) response.get("data");
-            
             AngelOneToken token = tokenRepository.findByUserId(userId)
                     .orElse(new AngelOneToken());
-                    
+
             token.setUserId(userId);
-            token.setAccessToken((String) data.get("jwtToken"));
-            token.setRefreshToken((String) data.get("refreshToken"));
             token.setJwtToken((String) data.get("jwtToken"));
+            token.setRefreshToken((String) data.get("refreshToken"));
             token.setFeedToken((String) data.get("feedToken"));
             token.setExpiryTime(LocalDateTime.now().plusHours(24)); // AngelOne tokens expire in 24 hours
             token.updateTimestamp();
-            
+
             tokenRepository.save(token);
             log.info("Saved AngelOne tokens for user: {}", userId);
         } catch (Exception e) {
@@ -81,145 +346,27 @@ public class AngelOneService {
     }
 
     /**
-     * Get stored token for user
+     * Create basic headers
      */
-    public Optional<AngelOneToken> getTokenForUser(String userId) {
-        return tokenRepository.findByUserId(userId);
+    private HttpHeaders createHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        headers.set("X-UserType", "USER");
+        headers.set("X-SourceID", "WEB");
+        headers.set("X-ClientLocalIP", "192.168.1.1");
+        headers.set("X-ClientPublicIP", "192.168.1.1");
+        headers.set("X-MACAddress", "00:00:00:00:00:00");
+        headers.set("X-PrivateKey", apiKey);
+        return headers;
     }
 
     /**
-     * Get user profile from AngelOne
+     * Create authenticated headers
      */
-    @SuppressWarnings("unchecked")
-    public Mono<Map<String, Object>> getUserProfile(String userId) {
-        Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
-        if (tokenOpt.isEmpty()) {
-            return Mono.error(new RuntimeException("No AngelOne token found for user"));
-        }
-
-        AngelOneToken token = tokenOpt.get();
-        return angelOneWebClient.get()
-                .uri("/rest/secure/angelbroking/user/v1/getProfile")
-                .header("Authorization", "Bearer " + token.getJwtToken())
-                .header("Accept", "application/json")
-                .header("X-UserType", "USER")
-                .header("X-SourceID", "WEB")
-                .header("X-ClientLocalIP", "192.168.1.1")
-                .header("X-ClientPublicIP", "192.168.1.1")
-                .header("X-MACAddress", "00:00:00:00:00:00")
-                .header("X-PrivateKey", angelOneConfig.getClientSecret())
-                .retrieve()
-                .bodyToMono(Map.class)
-                .map(response -> (Map<String, Object>) response);
-    }
-
-    /**
-     * Place an order
-     */
-    @SuppressWarnings("unchecked")
-    public Mono<Map<String, Object>> placeOrder(String userId, Map<String, Object> orderRequest) {
-        Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
-        if (tokenOpt.isEmpty()) {
-            return Mono.error(new RuntimeException("No AngelOne token found for user"));
-        }
-
-        AngelOneToken token = tokenOpt.get();
-        return angelOneWebClient.post()
-                .uri("/rest/secure/angelbroking/order/v1/placeOrder")
-                .header("Authorization", "Bearer " + token.getJwtToken())
-                .header("Accept", "application/json")
-                .header("X-UserType", "USER")
-                .header("X-SourceID", "WEB")
-                .header("X-ClientLocalIP", "192.168.1.1")
-                .header("X-ClientPublicIP", "192.168.1.1")
-                .header("X-MACAddress", "00:00:00:00:00:00")
-                .header("X-PrivateKey", angelOneConfig.getClientSecret())
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(BodyInserters.fromValue(orderRequest))
-                .retrieve()
-                .bodyToMono(Map.class)
-                .map(response -> (Map<String, Object>) response);
-    }
-
-    /**
-     * Get holdings
-     */
-    @SuppressWarnings("unchecked")
-    public Mono<Map<String, Object>> getHoldings(String userId) {
-        Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
-        if (tokenOpt.isEmpty()) {
-            return Mono.error(new RuntimeException("No AngelOne token found for user"));
-        }
-
-        AngelOneToken token = tokenOpt.get();
-        return angelOneWebClient.get()
-                .uri("/rest/secure/angelbroking/portfolio/v1/getHolding")
-                .header("Authorization", "Bearer " + token.getJwtToken())
-                .header("Accept", "application/json")
-                .header("X-UserType", "USER")
-                .header("X-SourceID", "WEB")
-                .header("X-ClientLocalIP", "192.168.1.1")
-                .header("X-ClientPublicIP", "192.168.1.1")
-                .header("X-MACAddress", "00:00:00:00:00:00")
-                .header("X-PrivateKey", angelOneConfig.getClientSecret())
-                .retrieve()
-                .bodyToMono(Map.class)
-                .map(response -> (Map<String, Object>) response);
-    }
-
-    /**
-     * Logout and revoke token
-     */
-    @SuppressWarnings("unchecked")
-    public Mono<Map<String, Object>> logout(String userId) {
-        Optional<AngelOneToken> tokenOpt = getTokenForUser(userId);
-        if (tokenOpt.isEmpty()) {
-            return Mono.error(new RuntimeException("No AngelOne token found for user"));
-        }
-
-        AngelOneToken token = tokenOpt.get();
-        return angelOneWebClient.post()
-                .uri("/rest/secure/angelbroking/user/v1/logout")
-                .header("Authorization", "Bearer " + token.getJwtToken())
-                .header("Accept", "application/json")
-                .header("X-UserType", "USER")
-                .header("X-SourceID", "WEB")
-                .header("X-ClientLocalIP", "192.168.1.1")
-                .header("X-ClientPublicIP", "192.168.1.1")
-                .header("X-MACAddress", "00:00:00:00:00:00")
-                .header("X-PrivateKey", angelOneConfig.getClientSecret())
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(BodyInserters.fromValue(Map.of("clientcode", angelOneConfig.getClientId())))
-                .retrieve()
-                .bodyToMono(Map.class)
-                .map(response -> (Map<String, Object>) response)
-                .doOnSuccess(response -> {
-                    tokenRepository.deleteByUserId(userId);
-                    log.info("Logged out and deleted tokens for user: {}", userId);
-                });
-    }
-
-    /**
-     * Generate checksum for AngelOne API
-     */
-    private String generateChecksum(String requestToken) {
-        // AngelOne requires SHA256 checksum of api_key+request_token+api_secret
-        try {
-            String data = angelOneConfig.getClientId() + requestToken + angelOneConfig.getClientSecret();
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data.getBytes("UTF-8"));
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : hash) {
-                String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) {
-                    hexString.append('0');
-                }
-                hexString.append(hex);
-            }
-            return hexString.toString();
-        } catch (Exception e) {
-            log.error("Error generating checksum: ", e);
-            return "";
-        }
+    private HttpHeaders createAuthenticatedHeaders(String jwtToken) {
+        HttpHeaders headers = createHeaders();
+        headers.set("Authorization", "Bearer " + jwtToken);
+        return headers;
     }
 }
