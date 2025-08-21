@@ -15,10 +15,12 @@ This is a comprehensive Stock Trading and Portfolio Management API built with Sp
 ## API Endpoints
 
 ### Authentication
+
 - POST `/api/auth/register` - User registration
 - POST `/api/auth/login` - User login
 
 ### AngelOne Trading
+
 - POST `/api/angelone/login` - AngelOne OAuth login
 - GET `/api/angelone/profile` - Get user profile
 - GET `/api/angelone/holdings` - Get holdings
@@ -26,6 +28,7 @@ This is a comprehensive Stock Trading and Portfolio Management API built with Sp
 - POST `/api/angelone/logout` - Logout
 
 ### Portfolio Management
+
 - GET `/api/portfolio/user/{userId}` - Get user portfolio
 - POST `/api/portfolio` - Create/Update portfolio
 - DELETE `/api/portfolio/{id}` - Delete portfolio
@@ -42,6 +45,7 @@ This is a comprehensive Stock Trading and Portfolio Management API built with Sp
 The application is configured for deployment on Render.com with automatic builds from GitHub.
 
 Environment Variables Required:
+
 - `MONGODB_URI`
 - `JWT_SECRET`
 - `ANGELONE_API_KEY`

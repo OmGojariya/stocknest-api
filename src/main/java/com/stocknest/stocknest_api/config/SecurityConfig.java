@@ -37,20 +37,25 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll() // Allow actuator endpoints
+                        .requestMatchers("/error").permitAll() // Allow error page
                         .anyRequest().authenticated())
                 .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authenticationProvider(authenticationProvider())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, authException) -> {
-                            System.err.println("Authentication failed: " + authException.getMessage());
+                            System.err.println("Authentication failed for: " + request.getRequestURI());
+                            System.err.println("Error: " + authException.getMessage());
                             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                            response.getWriter().write("Unauthorized: " + authException.getMessage());
+                            response.setContentType("application/json");
+                            response.getWriter().write("{\"error\":\"Unauthorized\",\"message\":\"" + authException.getMessage() + "\",\"path\":\"" + request.getRequestURI() + "\"}");
                         })
                         .accessDeniedHandler((request, response, accessDeniedException) -> {
-                            System.err.println("Access denied: " + accessDeniedException.getMessage());
+                            System.err.println("Access denied for: " + request.getRequestURI());
+                            System.err.println("Error: " + accessDeniedException.getMessage());
                             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                            response.getWriter().write("Forbidden: " + accessDeniedException.getMessage());
+                            response.setContentType("application/json");
+                            response.getWriter().write("{\"error\":\"Forbidden\",\"message\":\"" + accessDeniedException.getMessage() + "\",\"path\":\"" + request.getRequestURI() + "\"}");
                         }));
 
         return http.build();

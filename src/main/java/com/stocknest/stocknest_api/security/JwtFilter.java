@@ -29,13 +29,19 @@ public class JwtFilter extends OncePerRequestFilter {
             FilterChain filterChain) throws ServletException, IOException {
 
         String path = request.getServletPath();
+        String uri = request.getRequestURI();
 
-        // Allow public endpoints
-        if (path.startsWith("/api/auth/")) {
+        // Allow public endpoints - check both servletPath and requestURI
+        if (path.startsWith("/api/auth/") || uri.startsWith("/api/auth/") || 
+            path.equals("/api/auth") || uri.equals("/api/auth") ||
+            path.startsWith("/actuator/") || uri.startsWith("/actuator/") ||
+            path.startsWith("/error") || uri.startsWith("/error")) {
+            System.out.println("JwtFilter: Bypassing authentication for: " + uri);
             filterChain.doFilter(request, response);
             return;
         }
 
+        System.out.println("JwtFilter: Processing authentication for: " + uri);
         String authHeader = request.getHeader("Authorization");
         String token = null;
         String username = null;
