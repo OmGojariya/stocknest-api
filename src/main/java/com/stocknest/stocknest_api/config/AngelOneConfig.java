@@ -11,10 +11,10 @@ public class AngelOneConfig {
     @Value("${angelone.api.base-url:https://apiconnect.angelbroking.com}")
     private String baseUrl;
 
-    @Value("${angelone.api.key}")
+    @Value("${angelone.api.key:AAAQ167570}")
     private String apiKey;
 
-    @Value("${angelone.api.secret}")
+    @Value("${angelone.api.secret:01e94f0d-a641-4224-b57c-728f21c6c413}")
     private String apiSecret;
 
     @Bean
