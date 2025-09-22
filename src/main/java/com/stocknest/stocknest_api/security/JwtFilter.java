@@ -51,6 +51,11 @@ public class JwtFilter extends OncePerRequestFilter {
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
                 token = authHeader.substring(7);
                 username = jwtUtil.extractUsername(token);
+            } else {
+                System.out.println("No valid Authorization header found for: " + uri);
+                // For protected endpoints without valid auth header, let Spring Security handle it
+                filterChain.doFilter(request, response);
+                return;
             }
 
             // Authenticate if valid token and no existing authentication
@@ -65,6 +70,8 @@ public class JwtFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authToken);
 
                     System.out.println("JWT Authentication successful for user: " + username);
+                } else {
+                    System.out.println("JWT Token validation failed for user: " + username);
                 }
             }
         } catch (UsernameNotFoundException e) {
